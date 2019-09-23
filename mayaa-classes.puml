@@ -1,0 +1,209 @@
+@startuml {mayaa-classes.png}
+
+note as Note_of_Overall
+「テンプレート」とはHTMLファイルおよびinsert時の*.incファイルを表す。
+テンプレートを表示（レンダリング）するために関連づくMayaaファイルを処理する。
+実装では「テンプレート」と「Mayaaファイル」を総称して Specification として抽象化している。
+
+Specification には対応するソースが存在しており、
+その実体がどんな形態かはSourceDescriptorで抽象化されている。
+
+SpecificationはSourceDescriptorに対応づいて生成され、
+bulderパッケージのSpecificationBuilderによりソースから内部表現へ読み込まれる。
+end note
+
+package "engine" {
+
+    package "specification" {
+        interface NodeTreeWalker
+        interface Specification {
+            + setSource(source: SourceDescriptor) 
+            + getSource(): SourceDescriptor
+            + isDeprecated(): boolean
+            + getTimestamp(): Date
+            + build()
+            + build(rebuild: boolean)
+        }
+        interface SpecificationNode {
+            + getId()
+            + getSequenceID()
+            + addAttribute(qName, value)
+            + addAttribute(qName, originalName, value)
+            + getAttribute(qName): NodeAttribute
+            + iterateAttribute(): Iterator
+            + removeAttribute(qName)
+            + clearAttributes()
+            + copyTo(): SpecificationNode
+            + copyTo(filter: CopyToFilter): SpecificationNode
+        }
+'        note bottom: "*.html, *.inc記述内容の\n内部保持単位"
+
+        NodeTreeWalker "parent 0..1" *-- "children *" NodeTreeWalker
+        NodeTreeWalker <|-- Specification
+        NodeTreeWalker <|-- SpecificationNode
+
+        interface ParentSpecificationResolver {
+            getParentSpecification(spec:Specification):Specification
+        }
+        note as Note_of_ParentSpecificationResolver
+            ノードの親ではなく、対象のSpecificationの上位となる
+            Spacificationを返すためのインタフェース。
+
+            標準の実装では、テンプレートファイルの場合は
+            対応するMayaaファイル、Mayaaファイルの場合は
+            default.mayaaファイルのSpecificationを返す。
+            default.mayaaの親はないのでnullを返す。
+        end note
+        Note_of_ParentSpecificationResolver .. ParentSpecificationResolver
+    }
+
+}
+' src-api
+package "source" {
+    interface SourceDescriptor {
+        + getSystemId(): string
+        + getInputStream()
+        + exists(): boolean
+    }
+    note right: "Mayaa内の全てのリソースを\nsystemIdで表す記述子"
+
+    interface WritableSourceDescriptor {
+        + canWrite(): boolean
+        + getOutputStream()
+    }
+
+    interface SourceHolder {
+        + iterator(filter: string[]): Interator
+        + setRoot(root: string)
+        + getRoot(): string
+        + getSourceDescriptor(systemId: string)
+    }
+
+    SourceDescriptor <|-- WritableSourceDescriptor
+    SourceDescriptor -- SourceHolder
+}
+
+' src-impl
+package "source" {
+    class PageSourceFactoryImpl {
+        + getPageSource(systemId: string): SourceDescriptor
+    }
+    class SourceUtil {
+        {static} + getSourceDescriptor(systemId: string): SourceDescriptor
+    }
+    PageSourceFactoryImpl -- SourceUtil 
+    SourceDescriptor <-l- PageSourceFactoryImpl : instantiate
+
+    interface SourceDescriptorObserver {
+        + nextSourceDescriptor(sourceDescriptor): boolean
+    }
+
+    class SourceDescriptorProvideSourceHolder {
+        {abstract} + getSourceDescriptor(): ChangeableRootSourceDescriptor
+    }
+    SourceHolder <|-- SourceDescriptorProvideSourceHolder
+    SourceDescriptorProvideSourceHolder <|-- WebContextFolderSourceHolder
+    SourceDescriptorProvideSourceHolder <|-- WebContextRootResourceHolder
+
+    class PageSourceDescriptor {
+
+    }
+
+    SourceDescriptorObserver <|-- PageSourceDescriptor
+    CompositeSourceDescriptor <|-- PageSourceDescriptor
+
+    ' SourceDescriptor <|-- DelaySrouceDescriptor
+    ' SourceDescriptor <|-- ApplicationSrouceDescriptor
+    ' SourceDescriptor <|-- ClassLoaderSourceDescriptor
+    WritableSourceDescriptor <|-- CompositeSourceDescriptor
+    WritableSourceDescriptor <|-- FileSourceDescritor
+
+}
+
+package "engine" {
+    interface Engine {
+        + findSpecificationFromCache(systemId): Specification
+        + getPage(pageName): Page
+        + getErrorHandler(): ErrorHandler
+        + setErrorHandler(handler: ErrorHandler)
+        + doService(pageScopeValues: Map, pageFlush: boolean)
+        + handleError(throwable, pageFlush: boolean)
+        + createPageInstance(pageName): Page
+        + createTemplateInstance(page: Page, suffix, extension): Template
+        + getTemplateID(page: Page, suffix, extension): Template
+        + destroy()
+    }
+    interface Page {
+        + getSuperPage(): Page
+        + getSuperSuffix()
+        + getSuperExtension()
+        + getPageName()
+        + getSuffixScript(): CompiledScript
+        + getTemplate(suffix, extension): Template
+        + doPageRender(requestedSuffix, extension): ProcessStatus
+        + registBeginRenderNotifier(processor: TemplateProcessor): boolean
+    }
+    interface Template {
+        + initialize(page: Page, suffix, extension)
+        + getPage(): Page
+        + getSuffix()
+        + getExtension()
+        + doTemplateRender(topLevelPage: Page): ProcessStatus
+    }
+    interface TemplateRenderer {
+        + renderTemplate(topLevelPage: Page, templates: Template[])
+    }
+
+    Specification <|-- Page
+    Specification <|-- Template
+    Specification <|-- Engine
+    Page o-l- Template
+    Template -- TemplateRenderer
+
+    Page <|-- PageImpl
+}
+package "impl.engine" {
+ class EngineImpl
+ class EngineUtil
+}
+
+package "builder" {
+    interface SpecificationBuilder
+    interface TemplateBuilder {
+        + addInjectionResolver(resolver: InjectionResolver)
+    }
+    SpecificationNodeHandler <<sax handler>>
+
+    SpecificationBuilder <|-- TemplateBuilder
+    TemplateBuilder <|-- TemplateBuilderImpl
+    SpecificationBuilder <|-- SpecificationBuilderImpl
+    SpecificationBuilderImpl -- SpecificationNodeHandler
+
+    class DefaultLayoutTemplateBuilder
+    TemplateBuilderImpl <|-- DefaultLayoutTemplateBuilder
+
+    package "injection" {
+        interface InjectionResolver {
+            + getNode(original: SpecificationNode, injectionChain): SpecificationNode
+        }
+        interface InjectionChain {
+            + getNode(original: SpecificationNode): SpecificationNode
+        }
+        InjectionResolver -r- InjectionChain
+        InjectionChain <|-- DefaultInjectionChain
+
+        InjectionResolver <|-- EqualsIDInjectionResolver 
+        ' InjectionResolver <|-- InjectAttributeInjectionResolver
+        ' InjectionResolver <|-- InsertSetter 
+        ' InjectionResolver <|-- MetaValuesSetter 
+        ' InjectionResolver <|-- RenderedSetter 
+        InjectionResolver <|-- ReplaceSetter 
+    }
+}
+
+Specification o-- SourceDescriptor : has
+Specification --> SpecificationBuilder : buildWith
+Specification <-- InjectionResolver : transform
+
+
+@enduml
